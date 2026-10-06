@@ -2,15 +2,23 @@
 from __future__ import annotations
 
 from .adsb import PositionFrame, parse_position_frame
+from .altitude import decode_altitude
 from .cpr import global_decode
 from .errors import DecodeError
-from .schemas import ErrorInfo, PairIn, PairResult, Position
+from .schemas import (
+    Altitude,
+    ErrorInfo,
+    PairIn,
+    PairResult,
+    Position,
+    PositionWithAltitude,
+)
 
 #: Even/odd pairs must be received no more than 10 seconds apart.
 MAX_GAP_MS = 10_000
 
 
-def process_pair(pair: PairIn) -> PairResult:
+def process_pair(pair: PairIn, include_altitude: bool = False) -> PairResult:
     """Adjudicate one pair; a failure here never affects other pairs."""
     try:
         frames = [
@@ -41,17 +49,30 @@ def process_pair(pair: PairIn) -> PairResult:
         lat, lon = global_decode(even, odd)
         newer = _newer(even, odd)
 
-        return PairResult(
-            id=pair.id,
-            status="ok",
-            position=Position(
-                lat=round(lat, 6),
-                lon=round(lon, 6),
-                time_ms=newer.time_ms,
-                icao=newer.icao,
-                frame="odd" if newer.odd else "even",
-            ),
+        position_kwargs = dict(
+            lat=round(lat, 6),
+            lon=round(lon, 6),
+            time_ms=newer.time_ms,
+            icao=newer.icao,
+            frame="odd" if newer.odd else "even",
         )
+        if include_altitude:
+            # The height comes from the exact same frame the horizontal fix
+            # belongs to, so the fusion layer never mixes a barometric with
+            # a geometric height, or heights from two different messages.
+            height = decode_altitude(newer)
+            position = PositionWithAltitude(
+                altitude=Altitude(
+                    value=height.value,
+                    unit=height.unit,
+                    reference=height.reference,
+                ),
+                **position_kwargs,
+            )
+        else:
+            position = Position(**position_kwargs)
+
+        return PairResult(id=pair.id, status="ok", position=position)
     except DecodeError as exc:
         return PairResult(
             id=pair.id,

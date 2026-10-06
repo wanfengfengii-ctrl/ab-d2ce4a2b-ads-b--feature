@@ -10,6 +10,22 @@ EVEN = "8D40621D58C382D690C8AC2863A7"
 ODD = "8D40621D58C386435CC412692AD6"
 BAD_CRC = EVEN[:-1] + "0"  # EVEN ends in "7"; flipping it breaks parity
 
+# Synthetic TC=21 GNSS-height pair, ICAO ABCDEF (altitude LSB = 1 m).
+GNSS_EVEN = build_position_message("ABCDEF", 52.2572, 3.9194, odd=False,
+                                   type_code=21, alt_code=2000)
+GNSS_ODD = build_position_message("ABCDEF", 52.2580, 3.9200, odd=True,
+                                  type_code=21, alt_code=1219)
+# Same ICAO but barometric (TC=11) counterparts of the two frames above.
+BARO_EVEN = build_position_message("ABCDEF", 52.2572, 3.9194, odd=False,
+                                   type_code=11, alt_code=0xC38)
+BARO_ODD = build_position_message("ABCDEF", 52.2580, 3.9200, odd=True,
+                                  type_code=11, alt_code=0xC38)
+# TC=11 even frame whose altitude field is all zero (height not available).
+ZERO_ALT_EVEN = build_position_message("ABCDEF", 52.2572, 3.9194, odd=False,
+                                       type_code=11, alt_code=0)
+ZERO_ALT_ODD = build_position_message("ABCDEF", 52.2580, 3.9200, odd=True,
+                                      type_code=11, alt_code=0xC38)
+
 client = TestClient(app)
 
 
@@ -17,8 +33,11 @@ def frame(raw, time_ms):
     return {"time_ms": time_ms, "raw": raw}
 
 
-def post(pairs):
-    return client.post(URL, json={"pairs": pairs})
+def post(pairs, include_altitude=None):
+    payload = {"pairs": pairs}
+    if include_altitude is not None:
+        payload["includeAltitude"] = include_altitude
+    return client.post(URL, json=payload)
 
 
 def test_health():
@@ -135,3 +154,133 @@ def test_numeric_ids_accepted_and_echoed():
     resp = post([{"id": 7, "frames": [frame(EVEN, 6_000), frame(ODD, 1_000)]}])
     assert resp.status_code == 200
     assert resp.json()["results"][0]["id"] == "7"
+
+
+# --- includeAltitude -------------------------------------------------------
+
+def test_altitude_omitted_by_default_and_when_false():
+    resp = post([{"id": "p1", "frames": [frame(ODD, 1_000), frame(EVEN, 6_000)]}])
+    assert resp.status_code == 200
+    assert "altitude" not in resp.json()["results"][0]["position"]
+
+    resp = post([{"id": "p1", "frames": [frame(ODD, 1_000), frame(EVEN, 6_000)]}],
+                include_altitude=False)
+    assert resp.status_code == 200
+    assert "altitude" not in resp.json()["results"][0]["position"]
+
+
+def test_barometric_altitude_of_newer_frame():
+    resp = post([{"id": "p1", "frames": [frame(ODD, 1_000), frame(EVEN, 6_000)]}],
+                include_altitude=True)
+    pos = resp.json()["results"][0]["position"]
+    assert pos["frame"] == "even"
+    assert pos["altitude"] == {
+        "value": 38000,
+        "unit": "ft",
+        "reference": "barometric",
+    }
+    assert pos["time_ms"] == 6_000
+
+
+def test_gnss_height_of_odd_newer_frame():
+    resp = post([{"id": "gnss", "frames": [frame(GNSS_EVEN, 1_000),
+                                           frame(GNSS_ODD, 6_000)]}],
+                include_altitude=True)
+    result = resp.json()["results"][0]
+    assert result["status"] == "ok"
+    pos = result["position"]
+    assert pos["frame"] == "odd"
+    assert pos["time_ms"] == 6_000
+    assert pos["altitude"] == {"value": 1219, "unit": "m", "reference": "gnss"}
+
+
+def test_equal_timestamps_tie_altitude_to_even_frame():
+    # The horizontal fix belongs to the even frame on a receive-time tie, and
+    # the height must come from that same even frame (2000 m), not the odd one.
+    resp = post([{"id": "tie", "frames": [frame(GNSS_EVEN, 5_000),
+                                          frame(GNSS_ODD, 5_000)]}],
+                include_altitude=True)
+    pos = resp.json()["results"][0]["position"]
+    assert pos["frame"] == "even"
+    assert pos["time_ms"] == 5_000
+    assert pos["altitude"]["value"] == 2000
+    assert pos["altitude"]["reference"] == "gnss"
+
+
+def test_unavailable_altitude_on_newer_frame_is_group_error():
+    resp = post([{"id": "no-alt", "frames": [frame(ZERO_ALT_EVEN, 6_000),
+                                             frame(ZERO_ALT_ODD, 1_000)]}],
+                include_altitude=True)
+    result = resp.json()["results"][0]
+    assert result["status"] == "error"
+    assert result["position"] is None
+    assert result["error"]["code"] == "ALTITUDE_UNAVAILABLE"
+
+
+def test_zero_altitude_on_older_frame_does_not_matter():
+    # The all-zero frame is older; the newer odd frame carries a good height.
+    resp = post([{"id": "older-zero", "frames": [frame(ZERO_ALT_EVEN, 1_000),
+                                                 frame(ZERO_ALT_ODD, 6_000)]}],
+                include_altitude=True)
+    pos = resp.json()["results"][0]["position"]
+    assert pos["frame"] == "odd"
+    assert pos["altitude"] == {"value": 38000, "unit": "ft",
+                               "reference": "barometric"}
+
+
+def test_mixed_references_always_follow_the_newer_frame():
+    # Even frame barometric, odd frame GNSS: the newer one dictates the datum.
+    resp = post([{"id": "odd-newer", "frames": [frame(BARO_EVEN, 1_000),
+                                                frame(GNSS_ODD, 6_000)]}],
+                include_altitude=True)
+    pos = resp.json()["results"][0]["position"]
+    assert pos["frame"] == "odd"
+    assert pos["altitude"] == {"value": 1219, "unit": "m", "reference": "gnss"}
+
+    # GNSS even newer + barometric odd older: the result is still GNSS, and
+    # its value comes from the even frame rather than the odd one.
+    resp = post([{"id": "even-newer", "frames": [frame(GNSS_EVEN, 6_000),
+                                                 frame(BARO_ODD, 1_000)]}],
+                include_altitude=True)
+    pos = resp.json()["results"][0]["position"]
+    assert pos["frame"] == "even"
+    assert pos["altitude"] == {"value": 2000, "unit": "m", "reference": "gnss"}
+
+
+def test_bad_altitude_does_not_shadow_other_groups_and_keeps_order():
+    pairs = [
+        {"id": "good-gnss", "frames": [frame(GNSS_EVEN, 1_000),
+                                       frame(GNSS_ODD, 6_000)]},
+        {"id": "bad-alt", "frames": [frame(ZERO_ALT_EVEN, 6_000),
+                                     frame(ZERO_ALT_ODD, 1_000)]},
+        {"id": "good-baro", "frames": [frame(ODD, 1_000), frame(EVEN, 6_000)]},
+    ]
+    resp = post(pairs, include_altitude=True)
+    results = resp.json()["results"]
+    assert [r["id"] for r in results] == ["good-gnss", "bad-alt", "good-baro"]
+    assert results[0]["position"]["altitude"]["reference"] == "gnss"
+    assert results[1]["error"]["code"] == "ALTITUDE_UNAVAILABLE"
+    assert results[2]["position"]["altitude"]["reference"] == "barometric"
+
+
+def test_altitude_unavailable_suppressed_without_flag():
+    # includeAltitude omitted: the undecodable height must not sink the group.
+    resp = post([{"id": "still-ok", "frames": [frame(ZERO_ALT_EVEN, 6_000),
+                                               frame(ZERO_ALT_ODD, 1_000)]}])
+    result = resp.json()["results"][0]
+    assert result["status"] == "ok"
+    assert "altitude" not in result["position"]
+
+
+def test_unknown_request_field_still_rejected():
+    resp = client.post(URL, json={"includeAltitude": True, "bogus": 1,
+                                  "pairs": []})
+    assert resp.status_code == 422
+
+
+def test_include_altitude_must_be_boolean():
+    resp = client.post(URL, json={"includeAltitude": "maybe",
+                                  "pairs": [{"id": "p1",
+                                             "frames": [frame(ODD, 0),
+                                                        frame(EVEN, 5_000)]}]})
+    assert resp.status_code == 422

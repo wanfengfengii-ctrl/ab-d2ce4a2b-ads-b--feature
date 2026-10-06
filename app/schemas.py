@@ -34,6 +34,11 @@ class DecodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pairs: list[PairIn] = Field(min_length=MIN_PAIRS, max_length=MAX_PAIRS)
+    includeAltitude: bool = Field(
+        default=False,
+        description="when true, successful results also carry the numeric "
+                    "altitude of the newer frame and its vertical reference",
+    )
 
     @field_validator("pairs")
     @classmethod
@@ -46,6 +51,17 @@ class DecodeRequest(BaseModel):
         return pairs
 
 
+class Altitude(BaseModel):
+    """Height of the newer frame, with the vertical reference it uses."""
+
+    value: int = Field(description="numeric altitude of the newer frame")
+    unit: Literal["ft", "m"] = Field(description="unit of value: ft or m")
+    reference: Literal["barometric", "gnss"] = Field(
+        description="vertical datum: barometric pressure altitude (TC 9-18) "
+                    "or GNSS ellipsoidal height (TC 20-22)"
+    )
+
+
 class Position(BaseModel):
     """Decoded position of the newer frame of the pair."""
 
@@ -54,6 +70,20 @@ class Position(BaseModel):
     time_ms: int = Field(description="receive time of the frame the position was decoded from")
     icao: str = Field(description="24-bit ICAO address, uppercase hex")
     frame: Literal["even", "odd"] = Field(description="CPR flag of the newer frame")
+
+
+class PositionWithAltitude(Position):
+    """Position augmented with the altitude of the same newer frame."""
+
+    altitude: Altitude = Field(
+        description="altitude of the same newer frame, never mixed across "
+                    "frames or vertical references",
+    )
+
+
+#: Serialised without an ``altitude`` key unless altitude was requested and
+#: decoded; the two cases produce different JSON shapes, so model each one.
+PositionResult = PositionWithAltitude | Position
 
 
 class ErrorInfo(BaseModel):
@@ -66,7 +96,7 @@ class PairResult(BaseModel):
 
     id: str
     status: Literal["ok", "error"]
-    position: Optional[Position] = None
+    position: Optional[PositionResult] = None
     error: Optional[ErrorInfo] = None
 
 

@@ -26,4 +26,9 @@ def decode_positions(request: DecodeRequest) -> DecodeResponse:
     Every pair is processed independently: a bad pair yields a stable error
     code under its own id and never shadows the healthy pairs in the batch.
     """
-    return DecodeResponse(results=[process_pair(pair) for pair in request.pairs])
+    return DecodeResponse(
+        results=[
+            process_pair(pair, include_altitude=request.includeAltitude)
+            for pair in request.pairs
+        ]
+    )

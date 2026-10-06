@@ -18,6 +18,7 @@
 
 ```json
 {
+  "includeAltitude": true,
   "pairs": [
     {
       "id": "pair-001",
@@ -30,9 +31,24 @@
 }
 ```
 
+下面的响应即对应 `includeAltitude: true`；省略该字段或传 `false` 时，
+`position` 中不会出现 `altitude` 键，其余字段完全一致。
+
 - `id`：组编号，批内唯一（字符串，数字会被自动转为字符串）。
 - `time_ms`：接收时刻，纪元毫秒。
 - `raw`：28 位十六进制（112 比特 Mode S 帧）。
+- `includeAltitude`：可选，省略或为 `false` 时响应契约不变（成功结果中没有
+  `altitude` 字段）。设为 `true` 时，成功结果额外返回**较新帧**的数值高度及其
+  垂直基准，保证水平位置、高度来自同一条较新报文，不会混用气压与几何高度：
+
+  | 类型码 | `reference` | `unit` | `value` |
+  | --- | --- | --- | --- |
+  | 9–18 | `barometric` | `ft` | 整数；兼容 25 英尺（Q 位）与 Gillham 百英尺编码 |
+  | 20–22 | `gnss` | `m` | 无符号整数（12 位原始字段，LSB = 1 m） |
+
+  接收时刻相等时，位置与高度都取自偶帧。若较新帧的高度字段全零、保留或无法
+  解释，该组返回 `ALTITUDE_UNAVAILABLE`；高度仅取较新帧，较旧帧的坏高度不影响
+  裁决。
 
 合格组的裁决条件（任一不满足即返回稳定错误码并标明编号）：
 
@@ -55,7 +71,12 @@
         "lon": 3.919373,
         "time_ms": 1759700005000,
         "icao": "40621D",
-        "frame": "even"
+        "frame": "even",
+        "altitude": {
+          "value": 38000,
+          "unit": "ft",
+          "reference": "barometric"
+        }
       },
       "error": null
     },
@@ -68,6 +89,9 @@
   ]
 }
 ```
+
+`altitude` 仅在请求带 `includeAltitude: true` 且较新帧高度可解时出现；省略
+`includeAltitude` 时 `position` 中不含该字段。
 
 位置取**较新一帧**，纬度/经度为十进制度、六位小数；经度归一到
 `[-180, 180)`，跨日期变更线（如 179.98° → -179.98°）仍落在正确一侧。
@@ -84,6 +108,7 @@
 | `SAME_CPR_FLAG` | 两帧奇偶标志相同 |
 | `TIME_GAP_EXCEEDED` | 两帧相隔超过 10 秒 |
 | `LATITUDE_ZONE_MISMATCH` | 两帧纬度带（NL）不一致 |
+| `ALTITUDE_UNAVAILABLE` | 启用 `includeAltitude` 后，较新帧的高度全零、保留或无法解释 |
 | `INTERNAL_ERROR` | 未预期的单组失败（不会波及其他组） |
 
 请求级校验失败（组数超出 1–200、编号重复、帧数不为 2 等）返回 HTTP 422。
@@ -99,7 +124,8 @@ API_PORT=9000 docker compose up api
 ## 一次性验证
 
 `verify` 服务完成：镜像构建（与 api 共用同一镜像）、代码测试
-（pytest）、以及有效报文对与坏 CRC 报文对的接口冒烟，随后自行退出，
+（pytest）、以及接口冒烟（健康检查、有效报文对、坏 CRC、混合批次与
+`includeAltitude` 高度通道），随后自行退出，
 并以退出码报告结果（0 = 全部通过）：
 
 ```bash
@@ -122,9 +148,10 @@ python scripts/smoke.py http://localhost:8000
 app/
   adsb.py     # Mode S CRC(多项式 0x1FFF409)、DF17 帧解析、测试报文构造
   cpr.py      # 全球 CPR 解码（NL 纬度带、经度归一）与编码（测试用）
-  decoder.py  # 成对裁决：校验顺序、10 秒窗、较新帧选取
-  schemas.py  # 请求/响应模型（1–200 组、编号唯一）
+  altitude.py # 高度解码：25 英尺/Gillham 百英尺气压高度与 GNSS 米制高度
+  decoder.py  # 成对裁决：校验顺序、10 秒窗、较新帧选取、高度与位置同源
+  schemas.py  # 请求/响应模型（1–200 组、编号唯一、可选 includeAltitude）
   main.py     # FastAPI 入口：/health 与解码端点
-tests/        # 单元与接口测试（含日期变更线、纬度分区边界用例）
-scripts/smoke.py  # 冒烟：健康检查 + 有效报文 + 坏 CRC + 混合批次
+tests/        # 单元与接口测试（含日期变更线、纬度分区边界、高度编码用例）
+scripts/smoke.py  # 冒烟：健康检查 + 有效报文 + 坏 CRC + 混合批次 + 高度通道
 ```

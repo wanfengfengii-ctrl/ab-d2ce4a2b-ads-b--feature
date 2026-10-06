@@ -43,6 +43,7 @@ class PositionFrame:
     odd: bool
     lat_cpr: int
     lon_cpr: int
+    alt_code: int
 
 
 def parse_position_frame(raw: str, time_ms: int, index: int | None = None) -> PositionFrame:
@@ -86,6 +87,7 @@ def parse_position_frame(raw: str, time_ms: int, index: int | None = None) -> Po
         odd=bool((me >> 34) & 1),
         lat_cpr=(me >> 17) & 0x1FFFF,
         lon_cpr=me & 0x1FFFF,
+        alt_code=(me >> 36) & 0xFFF,
     )
 
 
@@ -106,13 +108,20 @@ def build_position_message(
     lon: float,
     odd: bool,
     type_code: int = 11,
+    alt_code: int = 0xC38,
 ) -> str:
-    """Build a synthetic DF17 airborne-position frame (tests/smoke helper)."""
+    """Build a synthetic DF17 airborne-position frame (tests/smoke helper).
+
+    ``alt_code`` is the raw 12-bit altitude field.  The default (0xC38)
+    encodes 38 000 ft barometric altitude in 25 ft increments; pass 0 for
+    "altitude not available" or an unsigned metre count for TC 20-22.
+    """
     if isinstance(icao, str):
         icao = int(icao, 16)
     yz, xz = encode_position(lat, lon, odd)
     me = (
         ((type_code & 0x1F) << 51)
+        | ((alt_code & 0xFFF) << 36)
         | ((1 if odd else 0) << 34)
         | ((yz & 0x1FFFF) << 17)
         | (xz & 0x1FFFF)
