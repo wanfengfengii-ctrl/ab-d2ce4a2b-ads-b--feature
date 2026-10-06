@@ -25,5 +25,12 @@ def decode_positions(request: DecodeRequest) -> DecodeResponse:
 
     Every pair is processed independently: a bad pair yields a stable error
     code under its own id and never shadows the healthy pairs in the batch.
+    With ``includeAltitude`` the altitude of the same newer frame is decoded
+    as well, tagged with its vertical reference (barometric ft / GNSS m).
     """
-    return DecodeResponse(results=[process_pair(pair) for pair in request.pairs])
+    return DecodeResponse(
+        results=[
+            process_pair(pair, include_altitude=request.include_altitude)
+            for pair in request.pairs
+        ]
+    )

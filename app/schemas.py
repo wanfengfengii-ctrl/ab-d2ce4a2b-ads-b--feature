@@ -3,7 +3,15 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+)
+from typing_extensions import TypedDict
 
 MIN_PAIRS = 1
 MAX_PAIRS = 200
@@ -34,6 +42,12 @@ class DecodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pairs: list[PairIn] = Field(min_length=MIN_PAIRS, max_length=MAX_PAIRS)
+    include_altitude: bool = Field(
+        default=False,
+        alias="includeAltitude",
+        description="also decode the altitude of the selected newer frame, "
+                    "with an explicit vertical reference",
+    )
 
     @field_validator("pairs")
     @classmethod
@@ -61,13 +75,52 @@ class ErrorInfo(BaseModel):
     message: str = Field(description="human-readable detail")
 
 
+class Altitude(BaseModel):
+    """Altitude of the same newer frame, with an explicit vertical datum."""
+
+    reference: Literal["barometric", "gnss"] = Field(
+        description="vertical reference: pressure altitude (TC 9-18) or GNSS "
+                    "height above the ellipsoid (TC 20-22)"
+    )
+    unit: Literal["ft", "m"] = Field(description="unit of value")
+    value: int = Field(description="altitude in `unit`; barometric may be negative")
+
+
+class _PairResultRequired(TypedDict):
+    id: str
+    status: Literal["ok", "error"]
+
+
+class PairResultOut(_PairResultRequired, total=False):
+    """Serialized shape of a pair verdict; ``altitude`` only when requested."""
+
+    position: Optional[Position]
+    error: Optional[ErrorInfo]
+    altitude: Optional[Altitude]
+
+
 class PairResult(BaseModel):
-    """Per-pair verdict; exactly one of ``position`` / ``error`` is set."""
+    """Per-pair verdict; exactly one of ``position`` / ``error`` is set.
+
+    ``altitude`` is only present when the request asked for it
+    (``includeAltitude``) and the pair decoded successfully; when absent the
+    key is omitted entirely so the default response contract is unchanged.
+    """
 
     id: str
     status: Literal["ok", "error"]
     position: Optional[Position] = None
     error: Optional[ErrorInfo] = None
+    altitude: Optional[Altitude] = None
+
+    @model_serializer(mode="plain", return_type=PairResultOut)
+    def _omit_altitude_unless_present(self) -> PairResultOut:
+        out = PairResultOut(
+            id=self.id, status=self.status, position=self.position, error=self.error
+        )
+        if self.altitude is not None:
+            out["altitude"] = self.altitude
+        return out
 
 
 class DecodeResponse(BaseModel):

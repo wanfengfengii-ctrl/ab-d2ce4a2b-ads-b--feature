@@ -43,6 +43,7 @@ class PositionFrame:
     odd: bool
     lat_cpr: int
     lon_cpr: int
+    altitude_field: int  # raw 12-bit altitude code (ME bits 9-20)
 
 
 def parse_position_frame(raw: str, time_ms: int, index: int | None = None) -> PositionFrame:
@@ -86,6 +87,7 @@ def parse_position_frame(raw: str, time_ms: int, index: int | None = None) -> Po
         odd=bool((me >> 34) & 1),
         lat_cpr=(me >> 17) & 0x1FFFF,
         lon_cpr=me & 0x1FFFF,
+        altitude_field=(me >> 36) & 0xFFF,
     )
 
 
@@ -106,13 +108,19 @@ def build_position_message(
     lon: float,
     odd: bool,
     type_code: int = 11,
+    altitude_field: int = 0,
 ) -> str:
-    """Build a synthetic DF17 airborne-position frame (tests/smoke helper)."""
+    """Build a synthetic DF17 airborne-position frame (tests/smoke helper).
+
+    ``altitude_field`` is the raw 12-bit altitude code; see
+    :mod:`app.altitude` for helpers that encode feet/metres into it.
+    """
     if isinstance(icao, str):
         icao = int(icao, 16)
     yz, xz = encode_position(lat, lon, odd)
     me = (
         ((type_code & 0x1F) << 51)
+        | ((altitude_field & 0xFFF) << 36)
         | ((1 if odd else 0) << 34)
         | ((yz & 0x1FFFF) << 17)
         | (xz & 0x1FFFF)

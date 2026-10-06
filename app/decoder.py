@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 from .adsb import PositionFrame, parse_position_frame
+from .altitude import decode_altitude
 from .cpr import global_decode
 from .errors import DecodeError
-from .schemas import ErrorInfo, PairIn, PairResult, Position
+from .schemas import Altitude, ErrorInfo, PairIn, PairResult, Position
 
 #: Even/odd pairs must be received no more than 10 seconds apart.
 MAX_GAP_MS = 10_000
 
 
-def process_pair(pair: PairIn) -> PairResult:
+def process_pair(pair: PairIn, include_altitude: bool = False) -> PairResult:
     """Adjudicate one pair; a failure here never affects other pairs."""
     try:
         frames = [
@@ -41,6 +42,15 @@ def process_pair(pair: PairIn) -> PairResult:
         lat, lon = global_decode(even, odd)
         newer = _newer(even, odd)
 
+        altitude = None
+        if include_altitude:
+            # The vertical datum must come from the very frame the reported
+            # position belongs to, so the fuser never mixes references.
+            decoded = decode_altitude(newer)
+            altitude = Altitude(
+                reference=decoded.reference, unit=decoded.unit, value=decoded.value
+            )
+
         return PairResult(
             id=pair.id,
             status="ok",
@@ -51,6 +61,7 @@ def process_pair(pair: PairIn) -> PairResult:
                 icao=newer.icao,
                 frame="odd" if newer.odd else "even",
             ),
+            altitude=altitude,
         )
     except DecodeError as exc:
         return PairResult(

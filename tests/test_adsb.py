@@ -30,6 +30,7 @@ def test_parse_position_frame_fields():
     assert frame.type_code == 11
     assert frame.odd is False
     assert frame.time_ms == 1234
+    assert frame.altitude_field == 0xC38  # 38000 ft, Q-bit set
     assert parse_position_frame(ODD, 0).odd is True
 
 
@@ -69,3 +70,13 @@ def test_builder_roundtrip_crc_and_fields():
     frame = parse_position_frame(raw, 0)
     assert frame.icao == "ABCDEF"
     assert frame.odd is True
+    assert frame.altitude_field == 0  # no altitude injected
+
+
+def test_builder_injects_altitude_field():
+    raw = build_position_message(
+        "ABCDEF", 52.25, 3.9, odd=False, type_code=20, altitude_field=0xABC
+    )
+    frame = parse_position_frame(raw, 0)
+    assert frame.type_code == 20
+    assert frame.altitude_field == 0xABC

@@ -18,6 +18,7 @@
 
 ```json
 {
+  "includeAltitude": true,
   "pairs": [
     {
       "id": "pair-001",
@@ -33,6 +34,8 @@
 - `id`：组编号，批内唯一（字符串，数字会被自动转为字符串）。
 - `time_ms`：接收时刻，纪元毫秒。
 - `raw`：28 位十六进制（112 比特 Mode S 帧）。
+- `includeAltitude`：**可选**，省略或为 `false` 时响应契约与之前完全一致；
+  为 `true` 时，成功结果额外携带 `altitude`（见下）。
 
 合格组的裁决条件（任一不满足即返回稳定错误码并标明编号）：
 
@@ -57,7 +60,8 @@
         "icao": "40621D",
         "frame": "even"
       },
-      "error": null
+      "error": null,
+      "altitude": {"reference": "barometric", "unit": "ft", "value": 38000}
     },
     {
       "id": "pair-002",
@@ -72,6 +76,21 @@
 位置取**较新一帧**，纬度/经度为十进制度、六位小数；经度归一到
 `[-180, 180)`，跨日期变更线（如 179.98° → -179.98°）仍落在正确一侧。
 
+### 高度（`includeAltitude: true` 时）
+
+成功结果增加 `altitude`，与位置取自**同一较新报文**（接收时刻相等时仍对应
+偶帧），融合器因此同时获得水平位置、数值高度与明确的垂直基准，不会混用
+气压高度与几何高度：
+
+- 类型码 9–18：`{"reference": "barometric", "unit": "ft", "value": <整数>}`，
+  兼容十二位高度字段的 25 英尺（Q 位）与 Gillham 百英尺两种编码，值可为负。
+- 类型码 20–22：`{"reference": "gnss", "unit": "m", "value": <无符号整数>}`，
+  即十二位字段直接表示的椭球高米数。
+
+若较新帧的高度字段全零、落入保留编码或无法解释，该组返回稳定错误码
+`ALTITUDE_UNAVAILABLE`（不返回位置），但不影响批内其他组；未请求高度时
+此类报文对仍正常解出位置。
+
 稳定错误码：
 
 | 代码 | 含义 |
@@ -84,6 +103,7 @@
 | `SAME_CPR_FLAG` | 两帧奇偶标志相同 |
 | `TIME_GAP_EXCEEDED` | 两帧相隔超过 10 秒 |
 | `LATITUDE_ZONE_MISMATCH` | 两帧纬度带（NL）不一致 |
+| `ALTITUDE_UNAVAILABLE` | 请求了高度但较新帧高度全零、保留或无法解释 |
 | `INTERNAL_ERROR` | 未预期的单组失败（不会波及其他组） |
 
 请求级校验失败（组数超出 1–200、编号重复、帧数不为 2 等）返回 HTTP 422。
@@ -120,11 +140,12 @@ python scripts/smoke.py http://localhost:8000
 
 ```
 app/
-  adsb.py     # Mode S CRC(多项式 0x1FFF409)、DF17 帧解析、测试报文构造
-  cpr.py      # 全球 CPR 解码（NL 纬度带、经度归一）与编码（测试用）
-  decoder.py  # 成对裁决：校验顺序、10 秒窗、较新帧选取
-  schemas.py  # 请求/响应模型（1–200 组、编号唯一）
-  main.py     # FastAPI 入口：/health 与解码端点
-tests/        # 单元与接口测试（含日期变更线、纬度分区边界用例）
-scripts/smoke.py  # 冒烟：健康检查 + 有效报文 + 坏 CRC + 混合批次
+  adsb.py      # Mode S CRC(多项式 0x1FFF409)、DF17 帧解析、测试报文构造
+  cpr.py       # 全球 CPR 解码（NL 纬度带、经度归一）与编码（测试用）
+  altitude.py  # 十二位高度字段解码（25 英尺 Q 位 / Gillham 百英尺 / GNSS 米）
+  decoder.py   # 成对裁决：校验顺序、10 秒窗、较新帧选取与高度挂接
+  schemas.py   # 请求/响应模型（1–200 组、编号唯一、includeAltitude）
+  main.py      # FastAPI 入口：/health 与解码端点
+tests/         # 单元与接口测试（含日期变更线、纬度分区边界、高度编码用例）
+scripts/smoke.py  # 冒烟：健康检查 + 有效报文 + 坏 CRC + 混合批次 + 高度流程
 ```
