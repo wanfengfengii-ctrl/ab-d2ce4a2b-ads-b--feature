@@ -1,0 +1,29 @@
+name: adsb-decoder
+
+services:
+  api:
+    build: .
+    image: adsb-decoder-api:latest
+    # Host port is configurable: API_PORT=9000 docker compose up api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=2).status==200 else 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  # One-shot gate: builds the image (shared with api), waits for a healthy
+  # API, runs the unit tests and the interface smoke (valid pair + bad CRC),
+  # then exits. Its exit code reports the verdict:
+  #   docker compose up --build --exit-code-from verify verify
+  verify:
+    image: adsb-decoder-api:latest
+    build: .
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["sh", "-c", "python -m pytest tests -q && python scripts/smoke.py http://api:8000"]
+    restart: "no"
